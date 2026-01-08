@@ -10,6 +10,8 @@ type Config struct {
 	ListenAddr     string
 	ListenPort     string
 	IPFSBin        string
+	IPFSPath       string
+	AnchorStateDir string
 	BitcoinCLI     string
 	BitcoinDataDir string
 	BitcoinAddress string
@@ -19,7 +21,10 @@ type Config struct {
 }
 
 func Load(path string) (*Config, error) {
-	cfg := &Config{}
+	cfg := &Config{
+		IPFSPath:       "/var/lib/dauntless/ipfs",
+		AnchorStateDir: "/var/lib/dauntless/anchor",
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -48,6 +53,10 @@ func Load(path string) (*Config, error) {
 			cfg.ListenPort = val
 		case "IPFS_BIN":
 			cfg.IPFSBin = val
+		case "IPFS_PATH":
+			cfg.IPFSPath = val
+		case "ANCHOR_STATE_DIR":
+			cfg.AnchorStateDir = val
 		case "BITCOIN_CLI":
 			cfg.BitcoinCLI = val
 		case "BITCOIN_DATADIR":

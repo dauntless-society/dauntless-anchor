@@ -1,71 +1,130 @@
 package handlers
 
 import (
-    "crypto/sha256"
-    "encoding/hex"
-    "encoding/json"
-    "io"
-    "net/http"
-    "time"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"time"
 
-    "api.dauntless-society.com/anchor/internal/bitcoin"
-    "api.dauntless-society.com/anchor/internal/ipfs"
-    "api.dauntless-society.com/anchor/internal/state"
+	"api.dauntless-society.com/anchor/internal/canonicalindex"
+	"api.dauntless-society.com/anchor/internal/hashing"
+	"api.dauntless-society.com/anchor/internal/state"
 
-    "github.com/google/uuid"
+	"github.com/google/uuid"
 )
 
-type AnchorService struct {
-	IPFS    *ipfs.Client
-	Bitcoin *bitcoin.Client
-}
-
 func (s *AnchorService) AnchorHandler(w http.ResponseWriter, r *http.Request) {
-	 job := state.AnchorJob{
-        ID:        uuid.NewString(),
-        Status:    state.StatusReceived,
-        CreatedAt: time.Now(),
-    }
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
 
-    data, err := io.ReadAll(r.Body)
-    if err != nil {
-        job.Status = state.StatusFailed
-        job.Error = err.Error()
-        json.NewEncoder(w).Encode(job)
-        return
-    }
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "file required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
 
-    hash := sha256.Sum256(data)
-    job.DocumentHash = hex.EncodeToString(hash[:])
-    job.Status = state.StatusValidated
+	author := r.FormValue("author")
 
-    cid, err := s.IPFS.Prepare(data)
-    if err != nil {
-        job.Status = state.StatusFailed
-        job.Error = err.Error()
-        json.NewEncoder(w).Encode(job)
-        return
-    }
+	expectedSHA256 := strings.ToLower(strings.TrimSpace(r.FormValue("sha256")))
+	expectedSHA512 := strings.ToLower(strings.TrimSpace(r.FormValue("sha512")))
+	expectedSHA3_512 := strings.ToLower(strings.TrimSpace(r.FormValue("sha3_512")))
 
-    job.CID = cid
-    job.Status = state.StatusIPFSPrepared
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "failed to read file", http.StatusInternalServerError)
+		return
+	}
 
-    txid, err := s.Bitcoin.Commit(job.DocumentHash)
-    if err != nil {
-        _ = s.IPFS.Abort(cid)
-        job.Status = state.StatusAborted
-        job.Error = err.Error()
-        json.NewEncoder(w).Encode(job)
-        return
-    }
+	digests := hashing.Compute(data)
 
-    job.TxID = txid
-    job.Status = state.StatusFinalized
-    job.UpdatedAt = time.Now()
+	// Validate client-provided hashes to prevent pollution in transit.
+	if expectedSHA256 == "" || expectedSHA512 == "" || expectedSHA3_512 == "" {
+		http.Error(w, "sha256, sha512, and sha3_512 are required", http.StatusBadRequest)
+		return
+	}
+	if expectedSHA256 != strings.ToLower(digests.SHA256) {
+		http.Error(w, "sha256 mismatch", http.StatusBadRequest)
+		return
+	}
+	if expectedSHA512 != strings.ToLower(digests.SHA512) {
+		http.Error(w, "sha512 mismatch", http.StatusBadRequest)
+		return
+	}
+	if expectedSHA3_512 != strings.ToLower(digests.SHA3_512) {
+		http.Error(w, "sha3_512 mismatch", http.StatusBadRequest)
+		return
+	}
 
-    json.NewEncoder(w).Encode(job)
-}
+	id := uuid.New().String()
 
-func AnchorHandler(w http.ResponseWriter, r *http.Request) {
+	job := state.AnchorJob{
+		ID:                   id,
+		DocumentHash:         digests.SHA256,
+		DocumentHashSHA512:   digests.SHA512,
+		DocumentHashSHA3_512: digests.SHA3_512,
+		Status:               state.StatusValidated,
+		CreatedAt:            time.Now().UTC(),
+		UpdatedAt:            time.Now().UTC(),
+	}
+	_ = state.Save(job)
 
+	// IPFS prepare (content anchoring)
+	cid, err := s.IPFS.Prepare(data)
+	if err != nil {
+		job.Status = state.StatusFailed
+		job.Error = err.Error()
+		_ = state.Save(job)
+		http.Error(w, "ipfs prepare failed", http.StatusInternalServerError)
+		return
+	}
+
+	job.CID = cid
+	job.Status = state.StatusIPFSPrepared
+	_ = state.Save(job)
+
+	if s.Index == nil {
+		job.Status = state.StatusFailed
+		job.Error = "canonical index store not configured"
+		_ = state.Save(job)
+		_ = s.IPFS.Abort(cid)
+		http.Error(w, "canonical index not configured", http.StatusInternalServerError)
+		return
+	}
+
+	indexCID, indexVersion, err := s.Index.Append(s.IPFS, canonicalindex.Entry{
+		DocumentID:       id,
+		DocumentVersion:  1,
+		DocumentSHA256:   digests.SHA256,
+		DocumentSHA512:   digests.SHA512,
+		DocumentSHA3_512: digests.SHA3_512,
+		DocumentCID:      cid,
+		Author:           author,
+		Timestamp:        time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		job.Status = state.StatusFailed
+		job.Error = err.Error()
+		_ = state.Save(job)
+		_ = s.IPFS.Abort(cid)
+		http.Error(w, "canonical index update failed", http.StatusInternalServerError)
+		return
+	}
+
+	job.IndexCID = indexCID
+	job.IndexVersion = indexVersion
+	job.Status = state.StatusIndexUpdated
+
+	if err := state.Save(job); err != nil {
+		_ = s.IPFS.Abort(indexCID)
+		_ = s.IPFS.Abort(cid)
+		http.Error(w, "failed to persist job", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
 }
