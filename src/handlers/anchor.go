@@ -15,8 +15,13 @@ import (
     "github.com/google/uuid"
 )
 
-func AnchorHandler(w http.ResponseWriter, r *http.Request) {
-    job := state.AnchorJob{
+type AnchorService struct {
+	IPFS    *ipfs.Client
+	Bitcoin *bitcoin.Client
+}
+
+func (s *AnchorService) AnchorHandler(w http.ResponseWriter, r *http.Request) {
+	 job := state.AnchorJob{
         ID:        uuid.NewString(),
         Status:    state.StatusReceived,
         CreatedAt: time.Now(),
@@ -34,7 +39,7 @@ func AnchorHandler(w http.ResponseWriter, r *http.Request) {
     job.DocumentHash = hex.EncodeToString(hash[:])
     job.Status = state.StatusValidated
 
-    cid, err := ipfs.Prepare(data)
+    cid, err := s.IPFS.Prepare(data)
     if err != nil {
         job.Status = state.StatusFailed
         job.Error = err.Error()
@@ -45,9 +50,9 @@ func AnchorHandler(w http.ResponseWriter, r *http.Request) {
     job.CID = cid
     job.Status = state.StatusIPFSPrepared
 
-    txid, err := bitcoin.Commit(job.DocumentHash)
+    txid, err := s.Bitcoin.Commit(job.DocumentHash)
     if err != nil {
-        _ = ipfs.Abort(cid)
+        _ = s.IPFS.Abort(cid)
         job.Status = state.StatusAborted
         job.Error = err.Error()
         json.NewEncoder(w).Encode(job)
@@ -59,4 +64,8 @@ func AnchorHandler(w http.ResponseWriter, r *http.Request) {
     job.UpdatedAt = time.Now()
 
     json.NewEncoder(w).Encode(job)
+}
+
+func AnchorHandler(w http.ResponseWriter, r *http.Request) {
+
 }
