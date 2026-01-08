@@ -1,0 +1,129 @@
+#cloud-config
+users:
+  - name: dauntless
+    shell: /bin/bash
+    groups: [wheel]
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - wget
+  - tar
+  - git
+  - jq
+  - policycoreutils-python-utils
+
+write_files:
+  # ------------------------
+  # IPFS install script
+  # ------------------------
+  - path: /opt/install-ipfs.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      IPFS_VERSION=0.26.0
+      cd /opt
+
+      curl -LO https://dist.ipfs.tech/kubo/v${IPFS_VERSION}/kubo_v${IPFS_VERSION}_linux-amd64.tar.gz
+      tar -xzf kubo_v${IPFS_VERSION}_linux-amd64.tar.gz
+      install -m 0755 kubo/ipfs /usr/local/bin/ipfs
+
+      export IPFS_PATH=/var/lib/dauntless/ipfs
+      mkdir -p "$IPFS_PATH"
+      chown -R dauntless:dauntless "$IPFS_PATH"
+
+      sudo -u dauntless IPFS_PATH="$IPFS_PATH" ipfs init --profile=server
+
+  # ------------------------
+  # Bitcoin install script
+  # ------------------------
+  - path: /opt/install-bitcoin.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      BITCOIN_VERSION=29.2
+      ARCH=x86_64-linux-gnu
+      cd /opt
+
+      curl -LO https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-${ARCH}.tar.gz
+      tar -xzf bitcoin-${BITCOIN_VERSION}-${ARCH}.tar.gz
+      install -m 0755 bitcoin-${BITCOIN_VERSION}/bin/* /usr/local/bin/
+
+      cat <<EOF >/var/lib/dauntless/bitcoin/bitcoin.conf
+      server=1
+      daemon=0
+      datadir=/var/lib/dauntless/bitcoin
+      rpcbind=127.0.0.1
+      rpcallowip=127.0.0.1
+      rpcport=8332
+      EOF
+
+      chown -R dauntless:dauntless /var/lib/dauntless/bitcoin
+
+  # ------------------------
+  # systemd: IPFS
+  # ------------------------
+  - path: /etc/systemd/system/ipfs.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=IPFS Daemon (Dauntless)
+      After=network.target
+
+      [Service]
+      User=dauntless
+      Group=dauntless
+      Environment=IPFS_PATH=/var/lib/dauntless/ipfs
+      ExecStart=/usr/local/bin/ipfs daemon --enable-gc
+      Restart=on-failure
+      LimitNOFILE=1048576
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ------------------------
+  # systemd: Bitcoin
+  # ------------------------
+  - path: /etc/systemd/system/bitcoind.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Bitcoin Core Daemon (Dauntless)
+      After=network.target
+
+      [Service]
+      User=dauntless
+      Group=dauntless
+      ExecStart=/usr/local/bin/bitcoind -conf=/var/lib/dauntless/bitcoin/bitcoin.conf
+      Restart=on-failure
+      LimitNOFILE=1048576
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Directories
+  - mkdir -p /var/lib/dauntless/{bitcoin,ipfs,anchor}
+  - mkdir -p /var/lib/dauntless/bitcoin/logs
+  - mkdir -p /var/lib/dauntless/ipfs/logs
+  - mkdir -p /var/lib/dauntless/anchor/{config,logs,data}
+  - chown -R dauntless:dauntless /var/lib/dauntless
+  - chmod -R 700 /var/lib/dauntless
+
+  # Install software
+  - bash /opt/install-ipfs.sh
+  - bash /opt/install-bitcoin.sh
+
+  # Enable services
+  - systemctl daemon-reload
+  - systemctl enable ipfs
+  - systemctl enable bitcoind
+  - systemctl start ipfs
+  - systemctl start bitcoind
