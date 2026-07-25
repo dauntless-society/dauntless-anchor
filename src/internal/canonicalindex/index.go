@@ -9,8 +9,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"api.dauntless-society.com/anchor/internal/ipfs"
 )
 
 const SchemaV1 = "dauntless-anchor.canonical-index.v1"
@@ -37,6 +35,11 @@ type Entry struct {
 
 type Store struct {
 	Dir string
+}
+
+type IPFSClient interface {
+	Prepare(data []byte) (string, error)
+	Abort(cid string) error
 }
 
 func NewStore(dir string) *Store {
@@ -76,7 +79,7 @@ func (s *Store) LoadLatest() (idx *Index, indexCID string, err error) {
 	return &parsed, strings.TrimSpace(string(cidBytes)), nil
 }
 
-func (s *Store) Append(ipfsClient *ipfs.Client, entry Entry) (newIndexCID string, newIndexVersion int, err error) {
+func (s *Store) Append(ipfsClient IPFSClient, entry Entry) (newIndexCID string, newIndexVersion int, err error) {
 	if ipfsClient == nil {
 		return "", 0, errors.New("ipfs client required")
 	}

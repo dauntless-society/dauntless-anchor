@@ -12,10 +12,7 @@ type Config struct {
 	IPFSBin        string
 	IPFSPath       string
 	AnchorStateDir string
-	BitcoinCLI     string
-	BitcoinDataDir string
-	BitcoinAddress string
-	BitcoinFeeBTC  string
+	JWTKeyFile     string
 	StagingDir     string
 	LogDir         string
 }
@@ -24,6 +21,7 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		IPFSPath:       "/var/lib/dauntless/ipfs",
 		AnchorStateDir: "/var/lib/dauntless/anchor",
+		JWTKeyFile:     "/etc/dauntless-anchor/jwt.key",
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -57,14 +55,8 @@ func Load(path string) (*Config, error) {
 			cfg.IPFSPath = val
 		case "ANCHOR_STATE_DIR":
 			cfg.AnchorStateDir = val
-		case "BITCOIN_CLI":
-			cfg.BitcoinCLI = val
-		case "BITCOIN_DATADIR":
-			cfg.BitcoinDataDir = val
-		case "BITCOIN_ADDRESS":
-			cfg.BitcoinAddress = val
-		case "BITCOIN_FEE_BTC":
-			cfg.BitcoinFeeBTC = val
+		case "JWT_KEY_FILE":
+			cfg.JWTKeyFile = val
 		case "STAGING_DIR":
 			cfg.StagingDir = val
 		case "LOG_DIR":
